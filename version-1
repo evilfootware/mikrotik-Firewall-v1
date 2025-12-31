@@ -17,14 +17,59 @@ add address=10.0.50.10 list=media-servers comment="Plex"
 add address=10.0.50.20 list=media-servers comment="JellyFin"
 add address=10.0.50.30 list=media-servers comment="Overseerr"
 
+# Backup management access
+add address=10.0.10.50 list=trusted-admin comment="Backup SSH access"
+
+# Bogon/Private IP addresses that should never appear on WAN
+add address=0.0.0.0/8 list=bogons comment="RFC 1122 'This' Network"
+add address=10.0.0.0/8 list=bogons comment="RFC 1918 Private"
+add address=100.64.0.0/10 list=bogons comment="RFC 6598 Shared Address Space"
+add address=127.0.0.0/8 list=bogons comment="RFC 1122 Loopback"
+add address=169.254.0.0/16 list=bogons comment="RFC 3927 Link Local"
+add address=172.16.0.0/12 list=bogons comment="RFC 1918 Private"
+add address=192.0.0.0/24 list=bogons comment="RFC 6890 IETF Protocol"
+add address=192.0.2.0/24 list=bogons comment="RFC 5737 Documentation"
+add address=192.168.0.0/16 list=bogons comment="RFC 1918 Private"
+add address=198.18.0.0/15 list=bogons comment="RFC 2544 Benchmarking"
+add address=198.51.100.0/24 list=bogons comment="RFC 5737 Documentation"
+add address=203.0.113.0/24 list=bogons comment="RFC 5737 Documentation"
+add address=224.0.0.0/4 list=bogons comment="Multicast"
+add address=240.0.0.0/4 list=bogons comment="Reserved"
+
 # ==========================================
-# QUEUE TREE - Bandwidth limits for Guest VLAN
+# FIREWALL RAW - Early packet processing for performance
 # ==========================================
-# First, mark connections from Guest VLAN
+/ip firewall raw
+
+# Drop packets from bogon addresses on WAN (before connection tracking)
+add chain=prerouting in-interface-list=WAN src-address-list=bogons action=drop comment="Drop bogons from WAN"
+
+# Accept established/related/untracked connections early (bypass connection tracking for performance)
+add chain=prerouting action=accept connection-state=established,related,untracked comment="Accept established/related/untracked"
+
+# ==========================================
+# FIREWALL MANGLE - Connection tracking and marking
+# ==========================================
 /ip firewall mangle
+
+# FastTrack - Offload established connections to hardware
+add chain=prerouting action=accept connection-state=established,related connection-nat-state=!dstnat comment="FastTrack: Accept established"
+
+# Mark connections from Guest VLAN for bandwidth limiting
 add chain=prerouting src-address=10.0.20.0/24 action=mark-connection new-connection-mark=guest-conn comment="Mark Guest VLAN connections"
 add chain=prerouting connection-mark=guest-conn action=mark-packet new-packet-mark=guest-upload comment="Mark Guest upload"
 add chain=postrouting dst-address=10.0.20.0/24 action=mark-packet new-packet-mark=guest-download comment="Mark Guest download"
+
+# Detect port scanning
+add chain=prerouting protocol=tcp tcp-flags=fin,!syn,!rst,!psh,!ack,!urg action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: FIN"
+add chain=prerouting protocol=tcp tcp-flags=fin,syn action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: SYN-FIN"
+add chain=prerouting protocol=tcp tcp-flags=syn,rst action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: SYN-RST"
+add chain=prerouting protocol=tcp tcp-flags=fin,psh,urg,!syn,!rst,!ack action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: FIN-PSH-URG"
+add chain=prerouting protocol=tcp tcp-flags=fin,syn,rst,psh,ack,urg action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: ALL flags"
+add chain=prerouting protocol=tcp tcp-flags=!fin,!syn,!rst,!psh,!ack,!urg action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: NO flags"
+
+# Drop packets from detected port scanners
+add chain=prerouting src-address-list=port-scanners action=drop comment="Drop port scanners"
 
 # Create queue tree for bandwidth limiting
 /queue tree
@@ -160,6 +205,28 @@ add chain=input src-address-list=vlan67-vpn protocol=udp dst-port=67 action=acce
 # Allow VPN limited router management (add specific ports if needed)
 add chain=input src-address-list=vlan67-vpn protocol=tcp dst-port=22,8291 action=accept comment="VLAN67: Allow SSH/Winbox"
 
+# Block remaining input to router
+add chain=input action=drop comment="Drop all other input to router"
+
+# ==========================================
+# FORWARD CHAIN - Traffic between networks
+# ==========================================
+
+# Drop invalid connections
+add chain=forward action=drop connection-state=invalid comment="Drop invalid connections"
+
+# Accept established and related connections
+add chain=forward action=accept connection-state=established,related comment="Accept established/related"
+
+# FastTrack established connections (hardware offload for performance)
+add chain=forward action=fasttrack-connection connection-state=established,related hw-offload=yes comment="FastTrack established connections"
+
+# Drop packets from port scanners
+add chain=forward src-address-list=port-scanners action=drop comment="Drop port scanners"
+
+# Block hairpin routing (prevent VLAN bypass via WAN)
+add chain=forward connection-state=new connection-nat-state=!dstnat in-interface-list=!WAN out-interface-list=!WAN action=drop comment="Block inter-VLAN hairpin"
+
 # ==========================================
 # FINAL CATCH-ALL RULES
 # ==========================================
@@ -169,3 +236,26 @@ add chain=forward action=log log-prefix="FW-DROP: " comment="Log dropped traffic
 # Drop everything else
 add chain=forward action=drop comment="Drop all other traffic"
 add chain=input action=drop comment="Drop all other input"
+
+# ==========================================
+# NEIGHBOR DISCOVERY - Disable on untrusted VLANs
+# ==========================================
+/ip neighbor discovery-settings
+set discover-interface-list=!dynamic
+
+# Disable MAC-Telnet and Winbox discovery on untrusted interfaces
+/tool mac-server
+set allowed-interface-list=none
+
+/tool mac-server mac-winbox
+set allowed-interface-list=none
+
+/tool mac-server ping
+set enabled=no
+
+# Enable MAC server only on ether5 (management port)
+/tool mac-server
+add interface=ether5
+
+/tool mac-server mac-winbox
+add interface=ether5
