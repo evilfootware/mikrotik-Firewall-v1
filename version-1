@@ -11,6 +11,7 @@ add address=10.0.30.0/24 list=vlan30-iot
 add address=10.0.40.0/24 list=vlan40-camera
 add address=10.0.50.0/24 list=vlan50-mgmt
 add address=172.20.67.0/24 list=vlan67-vpn
+add address=10.0.69.0/29 list=vlan69-dmz
 
 # Media server addresses for VLAN 10 access
 add address=10.0.50.10 list=media-servers comment="Plex"
@@ -205,6 +206,17 @@ add chain=input src-address-list=vlan67-vpn protocol=udp dst-port=67 action=acce
 # Allow VPN limited router management (add specific ports if needed)
 add chain=input src-address-list=vlan67-vpn protocol=tcp dst-port=22,8291 action=accept comment="VLAN67: Allow SSH/Winbox"
 
+# ==========================================
+# VLAN 69 (DMZ) RULES
+# ==========================================
+# Allow DMZ VLAN DNS/DHCP to router
+add chain=input src-address-list=vlan69-dmz protocol=udp dst-port=53 action=accept comment="VLAN69: Allow DNS"
+add chain=input src-address-list=vlan69-dmz protocol=tcp dst-port=53 action=accept comment="VLAN69: Allow DNS TCP"
+add chain=input src-address-list=vlan69-dmz protocol=udp dst-port=67 action=accept comment="VLAN69: Allow DHCP"
+
+# Block DMZ from router management
+add chain=input src-address-list=vlan69-dmz action=drop comment="VLAN69: Block router access"
+
 # Block remaining input to router
 add chain=input action=drop comment="Drop all other input to router"
 
@@ -226,6 +238,23 @@ add chain=forward src-address-list=port-scanners action=drop comment="Drop port 
 
 # Block hairpin routing (prevent VLAN bypass via WAN)
 add chain=forward connection-state=new connection-nat-state=!dstnat in-interface-list=!WAN out-interface-list=!WAN action=drop comment="Block inter-VLAN hairpin"
+
+# ==========================================
+# VLAN 69 (DMZ) RULES
+# ==========================================
+# Allow MGMT VLAN to access DMZ
+add chain=forward src-address-list=vlan50-mgmt dst-address-list=vlan69-dmz action=accept comment="VLAN69: Allow MGMT access"
+
+# Block DMZ from initiating connections to other VLANs
+add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan10-trusted action=drop comment="VLAN69: Block Trusted VLAN"
+add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan20-guest action=drop comment="VLAN69: Block Guest VLAN"
+add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan30-iot action=drop comment="VLAN69: Block IoT VLAN"
+add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan40-camera action=drop comment="VLAN69: Block Camera VLAN"
+add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan50-mgmt action=drop comment="VLAN69: Block MGMT VLAN"
+add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan67-vpn action=drop comment="VLAN69: Block VPN VLAN"
+
+# Allow DMZ to internet
+add chain=forward src-address-list=vlan69-dmz out-interface-list=WAN action=accept comment="VLAN69: Allow internet"
 
 # ==========================================
 # FINAL CATCH-ALL RULES
@@ -259,3 +288,17 @@ add interface=ether5
 
 /tool mac-server mac-winbox
 add interface=ether5
+
+# ==========================================
+# NAT RULES - Port Forwarding for DMZ
+# ==========================================
+/ip firewall nat
+
+# Port forward HTTP (80) to webserver in DMZ
+add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=80 action=dst-nat to-addresses=10.0.69.2 to-ports=80 comment="DMZ: Forward HTTP to webserver"
+
+# Port forward HTTPS (443) to webserver in DMZ  
+add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=443 action=dst-nat to-addresses=10.0.69.2 to-ports=443 comment="DMZ: Forward HTTPS to webserver"
+
+# Masquerade for internet access
+add chain=srcnat out-interface-list=WAN action=masquerade comment="Masquerade to internet"
