@@ -183,23 +183,3 @@ add chain=prerouting action=mark-connection new-connection-mark=vpn_conn passthr
 
 # Mark routing for VPN VLAN traffic
 add chain=prerouting action=mark-routing new-routing-mark=vpn_route passthrough=no connection-mark=vpn_conn comment="Mark VPN VLAN routing"
-
-# ====================================================
-# ROUTING FOR VPN VLAN
-# ====================================================
-
-# Create routing table for VPN traffic
-# /ip route
-# add dst-address=0.0.0.0/0 gateway=<your-vpn-gateway> routing-mark=vpn_route comment="Route VPN VLAN through VPN tunnel"
-
-# ====================================================
-# NOTES AND CONFIGURATION REMINDERS
-# ====================================================
-
-# 1. Replace <your-vpn-interface> in NAT rules with your actual VPN interface name
-# 2. Replace <your-vpn-gateway> in routing rules with your VPN gateway IP
-# 3. Ensure you have WAN interface list configured: /interface list member add list=WAN interface=<your-wan-interface>
-# 4. The anti-lockout rule assumes eth5 is your management port - adjust if needed
-# 5. For VLAN 67 VPN routing to work properly, ensure your VPN tunnel is always up
-# 6. Adjust bandwidth limits in queue rules as needed for Guest VLAN
-# 7. Test each rule carefully after implementation to ensure proper functionality
