@@ -1,304 +1,205 @@
-# MikroTik Inter-VLAN Firewall Rules
-# Security-focused configuration with bandwidth limits
+# MikroTik Firewall Rules for Multi-VLAN Environment
+# ====================================================
 
-# ==========================================
-# ADDRESS LISTS - For easy management
-# ==========================================
+# VLAN Configuration Summary:
+# VLAN 10 (Trusted): 10.0.10.0/24 - Full internet + IoT/Camera access + limited MGMT
+# VLAN 20 (Guest): 10.0.20.0/24 - Internet only with bandwidth limits
+# VLAN 30 (IoT): 10.0.30.0/24 - Internet only
+# VLAN 40 (Camera): 10.0.40.0/24 - Internet only
+# VLAN 50 (MGMT): 10.0.50.0/24 - Full access to all VLANs
+# VLAN 67 (VPN): 172.20.67.0/24 - VPN tunnel traffic only
+# VLAN 69 (DMZ): 10.0.69.0/29 - Web hosting, Internet access
+
+# ====================================================
+# ADDRESS LISTS
+# ====================================================
+
 /ip firewall address-list
-add address=10.0.10.0/24 list=vlan10-trusted
-add address=10.0.20.0/24 list=vlan20-guest
-add address=10.0.30.0/24 list=vlan30-iot
-add address=10.0.40.0/24 list=vlan40-camera
-add address=10.0.50.0/24 list=vlan50-mgmt
-add address=172.20.67.0/24 list=vlan67-vpn
-add address=10.0.69.0/29 list=vlan69-dmz
+add address=10.0.10.0/24 list=VLAN10_Trusted
+add address=10.0.20.0/24 list=VLAN20_Guest
+add address=10.0.30.0/24 list=VLAN30_IoT
+add address=10.0.40.0/24 list=VLAN40_Camera
+add address=10.0.50.0/24 list=VLAN50_MGMT
+add address=172.20.67.0/24 list=VLAN67_VPN
+add address=10.0.69.0/29 list=VLAN69_DMZ
 
-# Media server addresses for VLAN 10 access
-add address=10.0.50.10 list=media-servers comment="Plex"
-add address=10.0.50.20 list=media-servers comment="JellyFin"
-add address=10.0.50.30 list=media-servers comment="Overseerr"
+# Specific media servers in MGMT VLAN
+add address=10.0.50.10 list=Plex_Server
+add address=10.0.50.20 list=Jellyfin_Server
+add address=10.0.50.30 list=Overseerr_Server
 
-# Backup management access
-add address=10.0.10.50 list=trusted-admin comment="Backup SSH access"
+# DMZ webserver
+add address=10.0.69.2 list=DMZ_Webserver
 
-# Bogon/Private IP addresses that should never appear on WAN
-add address=0.0.0.0/8 list=bogons comment="RFC 1122 'This' Network"
-add address=10.0.0.0/8 list=bogons comment="RFC 1918 Private"
-add address=100.64.0.0/10 list=bogons comment="RFC 6598 Shared Address Space"
-add address=127.0.0.0/8 list=bogons comment="RFC 1122 Loopback"
-add address=169.254.0.0/16 list=bogons comment="RFC 3927 Link Local"
-add address=172.16.0.0/12 list=bogons comment="RFC 1918 Private"
-add address=192.0.0.0/24 list=bogons comment="RFC 6890 IETF Protocol"
-add address=192.0.2.0/24 list=bogons comment="RFC 5737 Documentation"
-add address=192.168.0.0/16 list=bogons comment="RFC 1918 Private"
-add address=198.18.0.0/15 list=bogons comment="RFC 2544 Benchmarking"
-add address=198.51.100.0/24 list=bogons comment="RFC 5737 Documentation"
-add address=203.0.113.0/24 list=bogons comment="RFC 5737 Documentation"
-add address=224.0.0.0/4 list=bogons comment="Multicast"
-add address=240.0.0.0/4 list=bogons comment="Reserved"
+# All internal networks
+add address=10.0.10.0/24 list=Internal_Networks
+add address=10.0.20.0/24 list=Internal_Networks
+add address=10.0.30.0/24 list=Internal_Networks
+add address=10.0.40.0/24 list=Internal_Networks
+add address=10.0.50.0/24 list=Internal_Networks
+add address=172.20.67.0/24 list=Internal_Networks
+add address=10.0.69.0/29 list=Internal_Networks
 
-# ==========================================
-# FIREWALL RAW - Early packet processing for performance
-# ==========================================
-/ip firewall raw
+# ====================================================
+# BANDWIDTH QUEUE FOR GUEST VLAN
+# ====================================================
 
-# Drop packets from bogon addresses on WAN (before connection tracking)
-add chain=prerouting in-interface-list=WAN src-address-list=bogons action=drop comment="Drop bogons from WAN"
+/queue simple
+add name="Guest_VLAN_Limit" target=10.0.20.0/24 max-limit=5M/20M burst-limit=6M/25M burst-threshold=4M/16M burst-time=30s/30s
 
-# Accept established/related/untracked connections early (bypass connection tracking for performance)
-add chain=prerouting action=accept connection-state=established,related,untracked comment="Accept established/related/untracked"
+# ====================================================
+# FIREWALL FILTER RULES - INPUT CHAIN
+# ====================================================
 
-# ==========================================
-# FIREWALL MANGLE - Connection tracking and marking
-# ==========================================
-/ip firewall mangle
-
-# FastTrack - Offload established connections to hardware
-add chain=prerouting action=accept connection-state=established,related connection-nat-state=!dstnat comment="FastTrack: Accept established"
-
-# Mark connections from Guest VLAN for bandwidth limiting
-add chain=prerouting src-address=10.0.20.0/24 action=mark-connection new-connection-mark=guest-conn comment="Mark Guest VLAN connections"
-add chain=prerouting connection-mark=guest-conn action=mark-packet new-packet-mark=guest-upload comment="Mark Guest upload"
-add chain=postrouting dst-address=10.0.20.0/24 action=mark-packet new-packet-mark=guest-download comment="Mark Guest download"
-
-# Detect port scanning
-add chain=prerouting protocol=tcp tcp-flags=fin,!syn,!rst,!psh,!ack,!urg action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: FIN"
-add chain=prerouting protocol=tcp tcp-flags=fin,syn action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: SYN-FIN"
-add chain=prerouting protocol=tcp tcp-flags=syn,rst action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: SYN-RST"
-add chain=prerouting protocol=tcp tcp-flags=fin,psh,urg,!syn,!rst,!ack action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: FIN-PSH-URG"
-add chain=prerouting protocol=tcp tcp-flags=fin,syn,rst,psh,ack,urg action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: ALL flags"
-add chain=prerouting protocol=tcp tcp-flags=!fin,!syn,!rst,!psh,!ack,!urg action=add-src-to-address-list address-list=port-scanners address-list-timeout=2w comment="Port scan: NO flags"
-
-# Drop packets from detected port scanners
-add chain=prerouting src-address-list=port-scanners action=drop comment="Drop port scanners"
-
-# Create queue tree for bandwidth limiting
-/queue tree
-add name=guest-download-limit packet-mark=guest-download parent=global max-limit=20M comment="Guest VLAN Download: 20Mbps"
-add name=guest-upload-limit packet-mark=guest-upload parent=global max-limit=10M comment="Guest VLAN Upload: 10Mbps"
-
-# ==========================================
-# FIREWALL FILTER RULES
-# ==========================================
-
-# Drop invalid connections
 /ip firewall filter
-add chain=forward action=drop connection-state=invalid comment="Drop invalid connections"
 
-# Accept established and related connections
-add chain=forward action=accept connection-state=established,related comment="Accept established/related"
+# --- ANTI-LOCKOUT RULE (MUST BE FIRST) ---
+add chain=input action=accept in-interface=eth5 protocol=tcp dst-port=22,80,443,8291 comment="Anti-Lockout: Allow management access on eth5" place-before=0
 
-# ==========================================
-# VLAN 10 (TRUSTED) RULES
-# ==========================================
-# Allow VLAN 10 to access media servers in MGMT VLAN
-add chain=forward src-address-list=vlan10-trusted dst-address-list=media-servers protocol=tcp dst-port=32400 action=accept comment="VLAN10: Allow Plex access"
-add chain=forward src-address-list=vlan10-trusted dst-address-list=media-servers protocol=tcp dst-port=8096 action=accept comment="VLAN10: Allow Jellyfin access"
-add chain=forward src-address-list=vlan10-trusted dst-address-list=media-servers protocol=tcp dst-port=5055 action=accept comment="VLAN10: Allow Overseerr access"
-
-# Block VLAN 10 from rest of MGMT VLAN
-add chain=forward src-address-list=vlan10-trusted dst-address-list=vlan50-mgmt action=drop comment="VLAN10: Block MGMT VLAN (except media servers)"
-
-# Allow VLAN 10 to access IoT, Camera, and VPN VLANs
-add chain=forward src-address-list=vlan10-trusted dst-address-list=vlan30-iot action=accept comment="VLAN10: Allow IoT access"
-add chain=forward src-address-list=vlan10-trusted dst-address-list=vlan40-camera action=accept comment="VLAN10: Allow Camera access"
-add chain=forward src-address-list=vlan10-trusted dst-address-list=vlan67-vpn action=accept comment="VLAN10: Allow VPN access"
-
-# Allow VLAN 10 to internet
-add chain=forward src-address-list=vlan10-trusted out-interface-list=WAN action=accept comment="VLAN10: Allow internet"
-
-# Allow VLAN 10 DNS/DHCP to router
-add chain=input src-address-list=vlan10-trusted protocol=udp dst-port=53 action=accept comment="VLAN10: Allow DNS"
-add chain=input src-address-list=vlan10-trusted protocol=tcp dst-port=53 action=accept comment="VLAN10: Allow DNS TCP"
-add chain=input src-address-list=vlan10-trusted protocol=udp dst-port=67 action=accept comment="VLAN10: Allow DHCP"
-
-# Block VLAN 10 from managing router
-add chain=input src-address-list=vlan10-trusted action=drop comment="VLAN10: Block router management"
-
-# ==========================================
-# VLAN 20 (GUEST) RULES
-# ==========================================
-# Allow Guest VLAN DNS/DHCP to router
-add chain=input src-address-list=vlan20-guest protocol=udp dst-port=53 action=accept comment="VLAN20: Allow DNS"
-add chain=input src-address-list=vlan20-guest protocol=tcp dst-port=53 action=accept comment="VLAN20: Allow DNS TCP"
-add chain=input src-address-list=vlan20-guest protocol=udp dst-port=67 action=accept comment="VLAN20: Allow DHCP"
-
-# Block Guest from all VLANs
-add chain=forward src-address-list=vlan20-guest dst-address-list=vlan10-trusted action=drop comment="VLAN20: Block Trusted VLAN"
-add chain=forward src-address-list=vlan20-guest dst-address-list=vlan30-iot action=drop comment="VLAN20: Block IoT VLAN"
-add chain=forward src-address-list=vlan20-guest dst-address-list=vlan40-camera action=drop comment="VLAN20: Block Camera VLAN"
-add chain=forward src-address-list=vlan20-guest dst-address-list=vlan50-mgmt action=drop comment="VLAN20: Block MGMT VLAN"
-add chain=forward src-address-list=vlan20-guest dst-address-list=vlan67-vpn action=drop comment="VLAN20: Block VPN VLAN"
-
-# Allow Guest to internet only (bandwidth limited via queue)
-add chain=forward src-address-list=vlan20-guest out-interface-list=WAN action=accept comment="VLAN20: Allow internet (bandwidth limited)"
-
-# Block Guest from router management
-add chain=input src-address-list=vlan20-guest action=drop comment="VLAN20: Block router access"
-
-# ==========================================
-# VLAN 30 (IoT) RULES
-# ==========================================
-# Allow IoT VLAN DNS/DHCP to router
-add chain=input src-address-list=vlan30-iot protocol=udp dst-port=53 action=accept comment="VLAN30: Allow DNS"
-add chain=input src-address-list=vlan30-iot protocol=tcp dst-port=53 action=accept comment="VLAN30: Allow DNS TCP"
-add chain=input src-address-list=vlan30-iot protocol=udp dst-port=67 action=accept comment="VLAN30: Allow DHCP"
-
-# Block IoT from all VLANs
-add chain=forward src-address-list=vlan30-iot dst-address-list=vlan10-trusted action=drop comment="VLAN30: Block Trusted VLAN"
-add chain=forward src-address-list=vlan30-iot dst-address-list=vlan20-guest action=drop comment="VLAN30: Block Guest VLAN"
-add chain=forward src-address-list=vlan30-iot dst-address-list=vlan40-camera action=drop comment="VLAN30: Block Camera VLAN"
-add chain=forward src-address-list=vlan30-iot dst-address-list=vlan50-mgmt action=drop comment="VLAN30: Block MGMT VLAN"
-add chain=forward src-address-list=vlan30-iot dst-address-list=vlan67-vpn action=drop comment="VLAN30: Block VPN VLAN"
-
-# Allow IoT to internet only
-add chain=forward src-address-list=vlan30-iot out-interface-list=WAN action=accept comment="VLAN30: Allow internet only"
-
-# Block IoT from router management
-add chain=input src-address-list=vlan30-iot action=drop comment="VLAN30: Block router access"
-
-# ==========================================
-# VLAN 40 (CAMERA) RULES
-# ==========================================
-# Allow Camera VLAN DNS/DHCP to router
-add chain=input src-address-list=vlan40-camera protocol=udp dst-port=53 action=accept comment="VLAN40: Allow DNS"
-add chain=input src-address-list=vlan40-camera protocol=tcp dst-port=53 action=accept comment="VLAN40: Allow DNS TCP"
-add chain=input src-address-list=vlan40-camera protocol=udp dst-port=67 action=accept comment="VLAN40: Allow DHCP"
-
-# Block Camera from initiating connections to other VLANs
-add chain=forward src-address-list=vlan40-camera dst-address-list=vlan10-trusted action=drop comment="VLAN40: Block Trusted VLAN"
-add chain=forward src-address-list=vlan40-camera dst-address-list=vlan20-guest action=drop comment="VLAN40: Block Guest VLAN"
-add chain=forward src-address-list=vlan40-camera dst-address-list=vlan30-iot action=drop comment="VLAN40: Block IoT VLAN"
-add chain=forward src-address-list=vlan40-camera dst-address-list=vlan50-mgmt action=drop comment="VLAN40: Block MGMT VLAN"
-add chain=forward src-address-list=vlan40-camera dst-address-list=vlan67-vpn action=drop comment="VLAN40: Block VPN VLAN"
-
-# Block Camera from internet
-add chain=forward src-address-list=vlan40-camera out-interface-list=WAN action=drop comment="VLAN40: Block internet (keep cameras local)"
-
-# Block Camera from router management
-add chain=input src-address-list=vlan40-camera action=drop comment="VLAN40: Block router access"
-
-# ==========================================
-# VLAN 50 (MGMT) RULES
-# ==========================================
-# Allow MGMT full access to all VLANs
-add chain=forward src-address-list=vlan50-mgmt action=accept comment="VLAN50: Allow all access"
-
-# Allow MGMT to manage router
-add chain=input src-address-list=vlan50-mgmt action=accept comment="VLAN50: Allow router management"
-
-# ==========================================
-# VLAN 67 (VPN) RULES
-# ==========================================
-# Allow VPN to access Trusted, Camera, and MGMT VLANs
-add chain=forward src-address-list=vlan67-vpn dst-address-list=vlan10-trusted action=accept comment="VLAN67: Allow Trusted access"
-add chain=forward src-address-list=vlan67-vpn dst-address-list=vlan40-camera action=accept comment="VLAN67: Allow Camera access"
-add chain=forward src-address-list=vlan67-vpn dst-address-list=vlan50-mgmt action=accept comment="VLAN67: Allow MGMT access"
-
-# Allow VPN to internet
-add chain=forward src-address-list=vlan67-vpn out-interface-list=WAN action=accept comment="VLAN67: Allow internet"
-
-# Allow VPN DNS/DHCP to router
-add chain=input src-address-list=vlan67-vpn protocol=udp dst-port=53 action=accept comment="VLAN67: Allow DNS"
-add chain=input src-address-list=vlan67-vpn protocol=tcp dst-port=53 action=accept comment="VLAN67: Allow DNS TCP"
-add chain=input src-address-list=vlan67-vpn protocol=udp dst-port=67 action=accept comment="VLAN67: Allow DHCP"
-
-# Allow VPN limited router management (add specific ports if needed)
-add chain=input src-address-list=vlan67-vpn protocol=tcp dst-port=22,8291 action=accept comment="VLAN67: Allow SSH/Winbox"
-
-# ==========================================
-# VLAN 69 (DMZ) RULES
-# ==========================================
-# Allow DMZ VLAN DNS/DHCP to router
-add chain=input src-address-list=vlan69-dmz protocol=udp dst-port=53 action=accept comment="VLAN69: Allow DNS"
-add chain=input src-address-list=vlan69-dmz protocol=tcp dst-port=53 action=accept comment="VLAN69: Allow DNS TCP"
-add chain=input src-address-list=vlan69-dmz protocol=udp dst-port=67 action=accept comment="VLAN69: Allow DHCP"
-
-# Block DMZ from router management
-add chain=input src-address-list=vlan69-dmz action=drop comment="VLAN69: Block router access"
-
-# Block remaining input to router
-add chain=input action=drop comment="Drop all other input to router"
-
-# ==========================================
-# FORWARD CHAIN - Traffic between networks
-# ==========================================
+# Accept established/related connections
+add chain=input action=accept connection-state=established,related,untracked comment="Accept established/related/untracked"
 
 # Drop invalid connections
-add chain=forward action=drop connection-state=invalid comment="Drop invalid connections"
+add chain=input action=drop connection-state=invalid comment="Drop invalid connections"
 
-# Accept established and related connections
-add chain=forward action=accept connection-state=established,related comment="Accept established/related"
+# Allow ICMP from all internal VLANs
+add chain=input action=accept protocol=icmp src-address-list=Internal_Networks comment="Allow ICMP from all VLANs"
 
-# FastTrack established connections (hardware offload for performance)
-add chain=forward action=fasttrack-connection connection-state=established,related hw-offload=yes comment="FastTrack established connections"
+# Allow DNS queries to router from all VLANs
+add chain=input action=accept protocol=udp dst-port=53 src-address-list=Internal_Networks comment="Allow DNS from all VLANs"
+add chain=input action=accept protocol=tcp dst-port=53 src-address-list=Internal_Networks comment="Allow DNS TCP from all VLANs"
 
-# Drop packets from port scanners
-add chain=forward src-address-list=port-scanners action=drop comment="Drop port scanners"
+# Allow DHCP requests from all VLANs
+add chain=input action=accept protocol=udp dst-port=67 src-address-list=Internal_Networks comment="Allow DHCP from all VLANs"
 
-# Block hairpin routing (prevent VLAN bypass via WAN)
-add chain=forward connection-state=new connection-nat-state=!dstnat in-interface-list=!WAN out-interface-list=!WAN action=drop comment="Block inter-VLAN hairpin"
+# Allow full management from MGMT VLAN
+add chain=input action=accept src-address-list=VLAN50_MGMT comment="Allow all from MGMT VLAN"
 
-# ==========================================
-# VLAN 69 (DMZ) RULES
-# ==========================================
-# Allow MGMT VLAN to access DMZ
-add chain=forward src-address-list=vlan50-mgmt dst-address-list=vlan69-dmz action=accept comment="VLAN69: Allow MGMT access"
-
-# Block DMZ from initiating connections to other VLANs
-add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan10-trusted action=drop comment="VLAN69: Block Trusted VLAN"
-add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan20-guest action=drop comment="VLAN69: Block Guest VLAN"
-add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan30-iot action=drop comment="VLAN69: Block IoT VLAN"
-add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan40-camera action=drop comment="VLAN69: Block Camera VLAN"
-add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan50-mgmt action=drop comment="VLAN69: Block MGMT VLAN"
-add chain=forward src-address-list=vlan69-dmz dst-address-list=vlan67-vpn action=drop comment="VLAN69: Block VPN VLAN"
-
-# Allow DMZ to internet
-add chain=forward src-address-list=vlan69-dmz out-interface-list=WAN action=accept comment="VLAN69: Allow internet"
-
-# ==========================================
-# FINAL CATCH-ALL RULES
-# ==========================================
-# Log dropped traffic (optional - remove if too noisy)
-add chain=forward action=log log-prefix="FW-DROP: " comment="Log dropped traffic"
-
-# Drop everything else
-add chain=forward action=drop comment="Drop all other traffic"
+# Drop all other input
 add chain=input action=drop comment="Drop all other input"
 
-# ==========================================
-# NEIGHBOR DISCOVERY - Disable on untrusted VLANs
-# ==========================================
-/ip neighbor discovery-settings
-set discover-interface-list=!dynamic
+# ====================================================
+# FIREWALL FILTER RULES - FORWARD CHAIN
+# ====================================================
 
-# Disable MAC-Telnet and Winbox discovery on untrusted interfaces
-/tool mac-server
-set allowed-interface-list=none
+# Accept established/related connections
+add chain=forward action=accept connection-state=established,related,untracked comment="Accept established/related/untracked"
 
-/tool mac-server mac-winbox
-set allowed-interface-list=none
+# Drop invalid connections
+add chain=forward action=drop connection-state=invalid comment="Drop invalid connections"
 
-/tool mac-server ping
-set enabled=no
+# --- VLAN 50 MGMT - Full Access to Everything ---
+add chain=forward action=accept src-address-list=VLAN50_MGMT comment="MGMT VLAN: Full access to all VLANs"
 
-# Enable MAC server only on ether5 (management port)
-/tool mac-server
-add interface=ether5
+# --- VLAN 69 DMZ Rules ---
+# Allow DMZ to Internet
+add chain=forward action=accept src-address-list=VLAN69_DMZ dst-address-list=!Internal_Networks comment="DMZ: Allow Internet access"
 
-/tool mac-server mac-winbox
-add interface=ether5
+# Allow MGMT to DMZ
+add chain=forward action=accept src-address-list=VLAN50_MGMT dst-address-list=VLAN69_DMZ comment="DMZ: Allow MGMT access"
 
-# ==========================================
-# NAT RULES - Port Forwarding for DMZ
-# ==========================================
+# Allow inbound HTTP/HTTPS to DMZ webserver (from Internet)
+add chain=forward action=accept dst-address=10.0.69.2 protocol=tcp dst-port=80,443 in-interface-list=WAN comment="DMZ: Allow HTTP/HTTPS to webserver"
+
+# Block DMZ from accessing internal VLANs
+add chain=forward action=drop src-address-list=VLAN69_DMZ dst-address-list=Internal_Networks comment="DMZ: Block access to internal VLANs"
+
+# --- VLAN 10 TRUSTED Rules ---
+# Allow Trusted to IoT VLAN
+add chain=forward action=accept src-address-list=VLAN10_Trusted dst-address-list=VLAN30_IoT comment="Trusted: Allow access to IoT VLAN"
+
+# Allow Trusted to Camera VLAN
+add chain=forward action=accept src-address-list=VLAN10_Trusted dst-address-list=VLAN40_Camera comment="Trusted: Allow access to Camera VLAN"
+
+# Allow Trusted to specific media servers in MGMT VLAN
+add chain=forward action=accept src-address-list=VLAN10_Trusted dst-address=10.0.50.10 protocol=tcp dst-port=32400 comment="Trusted: Allow Plex access"
+add chain=forward action=accept src-address-list=VLAN10_Trusted dst-address=10.0.50.20 protocol=tcp dst-port=8097 comment="Trusted: Allow Jellyfin access"
+add chain=forward action=accept src-address-list=VLAN10_Trusted dst-address=10.0.50.30 protocol=tcp dst-port=5055 comment="Trusted: Allow Overseerr access"
+
+# Block Trusted from other MGMT VLAN resources
+add chain=forward action=drop src-address-list=VLAN10_Trusted dst-address-list=VLAN50_MGMT comment="Trusted: Block other MGMT VLAN access"
+
+# Allow Trusted to Internet
+add chain=forward action=accept src-address-list=VLAN10_Trusted dst-address-list=!Internal_Networks comment="Trusted: Allow Internet access"
+
+# Block Trusted from other internal VLANs
+add chain=forward action=drop src-address-list=VLAN10_Trusted dst-address-list=Internal_Networks comment="Trusted: Block other VLAN access"
+
+# --- VLAN 20 GUEST Rules ---
+# Allow Guest to Internet only
+add chain=forward action=accept src-address-list=VLAN20_Guest dst-address-list=!Internal_Networks comment="Guest: Allow Internet only"
+
+# Block Guest from all internal VLANs
+add chain=forward action=drop src-address-list=VLAN20_Guest dst-address-list=Internal_Networks comment="Guest: Block all VLAN access"
+
+# --- VLAN 30 IoT Rules ---
+# Allow IoT to Internet only
+add chain=forward action=accept src-address-list=VLAN30_IoT dst-address-list=!Internal_Networks comment="IoT: Allow Internet only"
+
+# Block IoT from all internal VLANs
+add chain=forward action=drop src-address-list=VLAN30_IoT dst-address-list=Internal_Networks comment="IoT: Block all VLAN access"
+
+# --- VLAN 40 Camera Rules ---
+# Allow Camera to Internet only
+add chain=forward action=accept src-address-list=VLAN40_Camera dst-address-list=!Internal_Networks comment="Camera: Allow Internet only"
+
+# Block Camera from all internal VLANs
+add chain=forward action=drop src-address-list=VLAN40_Camera dst-address-list=Internal_Networks comment="Camera: Block all VLAN access"
+
+# --- VLAN 67 VPN Rules ---
+# Block VPN VLAN from accessing any other internal VLANs
+add chain=forward action=drop src-address-list=VLAN67_VPN dst-address-list=Internal_Networks comment="VPN: Block all VLAN access"
+
+# VPN traffic should go through VPN tunnel (handled by routing/marking)
+add chain=forward action=accept src-address-list=VLAN67_VPN comment="VPN: Allow VPN tunnel traffic"
+
+# --- Final Drop Rule ---
+add chain=forward action=drop comment="Drop all other forward traffic"
+
+# ====================================================
+# NAT RULES
+# ====================================================
+
 /ip firewall nat
 
-# Port forward HTTP (80) to Nginx Proxy Manager in DMZ
-add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=80 action=dst-nat to-addresses=10.0.69.2 to-ports=1880 comment="DMZ: Forward HTTP to Nginx Proxy Manager"
+# Port forward for DMZ webserver (HTTP/HTTPS)
+add chain=dstnat action=dst-nat dst-port=80 protocol=tcp to-addresses=10.0.69.2 to-ports=80 in-interface-list=WAN comment="DMZ: Port forward HTTP to webserver"
+add chain=dstnat action=dst-nat dst-port=443 protocol=tcp to-addresses=10.0.69.2 to-ports=443 in-interface-list=WAN comment="DMZ: Port forward HTTPS to webserver"
 
-# Port forward HTTPS (443) to Nginx Proxy Manager in DMZ  
-add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=443 action=dst-nat to-addresses=10.0.69.2 to-ports=18443 comment="DMZ: Forward HTTPS to Nginx Proxy Manager"
+# Masquerade for Internet access (exclude VPN VLAN)
+add chain=srcnat action=masquerade out-interface-list=WAN src-address-list=!VLAN67_VPN comment="NAT for Internet access (exclude VPN VLAN)"
 
-# Masquerade for internet access
-add chain=srcnat out-interface-list=WAN action=masquerade comment="Masquerade to internet"
+# Masquerade for VPN VLAN through VPN interface
+add chain=srcnat action=masquerade out-interface=<your-vpn-interface> src-address-list=VLAN67_VPN comment="NAT for VPN VLAN through VPN tunnel"
+
+# ====================================================
+# MANGLE RULES FOR VPN ROUTING
+# ====================================================
+
+/ip firewall mangle
+
+# Mark connections from VPN VLAN
+add chain=prerouting action=mark-connection new-connection-mark=vpn_conn passthrough=yes src-address-list=VLAN67_VPN comment="Mark VPN VLAN connections"
+
+# Mark routing for VPN VLAN traffic
+add chain=prerouting action=mark-routing new-routing-mark=vpn_route passthrough=no connection-mark=vpn_conn comment="Mark VPN VLAN routing"
+
+# ====================================================
+# ROUTING FOR VPN VLAN
+# ====================================================
+
+# Create routing table for VPN traffic
+# /ip route
+# add dst-address=0.0.0.0/0 gateway=<your-vpn-gateway> routing-mark=vpn_route comment="Route VPN VLAN through VPN tunnel"
+
+# ====================================================
+# NOTES AND CONFIGURATION REMINDERS
+# ====================================================
+
+# 1. Replace <your-vpn-interface> in NAT rules with your actual VPN interface name
+# 2. Replace <your-vpn-gateway> in routing rules with your VPN gateway IP
+# 3. Ensure you have WAN interface list configured: /interface list member add list=WAN interface=<your-wan-interface>
+# 4. The anti-lockout rule assumes eth5 is your management port - adjust if needed
+# 5. For VLAN 67 VPN routing to work properly, ensure your VPN tunnel is always up
+# 6. Adjust bandwidth limits in queue rules as needed for Guest VLAN
+# 7. Test each rule carefully after implementation to ensure proper functionality
