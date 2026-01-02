@@ -294,11 +294,11 @@ add interface=ether5
 # ==========================================
 /ip firewall nat
 
-# Port forward HTTP (80) to webserver in DMZ
-add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=80 action=dst-nat to-addresses=10.0.69.2 to-ports=80 comment="DMZ: Forward HTTP to webserver"
+# Port forward HTTP (80) to Nginx Proxy Manager in DMZ
+add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=80 action=dst-nat to-addresses=10.0.69.2 to-ports=1880 comment="DMZ: Forward HTTP to Nginx Proxy Manager"
 
-# Port forward HTTPS (443) to webserver in DMZ  
-add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=443 action=dst-nat to-addresses=10.0.69.2 to-ports=443 comment="DMZ: Forward HTTPS to webserver"
+# Port forward HTTPS (443) to Nginx Proxy Manager in DMZ  
+add chain=dstnat in-interface-list=WAN protocol=tcp dst-port=443 action=dst-nat to-addresses=10.0.69.2 to-ports=18443 comment="DMZ: Forward HTTPS to Nginx Proxy Manager"
 
 # Masquerade for internet access
 add chain=srcnat out-interface-list=WAN action=masquerade comment="Masquerade to internet"
